@@ -8,5 +8,5 @@ cd pde-opt
 conda create -y -n pde-opt-env python=3.10
 conda activate pde-opt-env
 pip install -e .
-pip install -U "jax[cuda12]"
+pip install -U "jax[cuda12]==0.6.2" "jaxlib==0.6.2"
 ```
