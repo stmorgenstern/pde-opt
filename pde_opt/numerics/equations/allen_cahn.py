@@ -282,7 +282,7 @@ class AllenCahn2DPeriodicButlerVolmerConstantCurrent(BaseEquation):
 
 
 @dataclasses.dataclass
-class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
+class AllenCahn2DSBM_BV_CC(BaseEquation):
     domain: Domain
     """Domain of the equation"""
     kappa: float
@@ -293,10 +293,14 @@ class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
     """Function for the chemical potential"""
     j0: Union[Callable, eqx.Module]  # Can be a callable or Equinox module
     """Function for the exchange current"""
-    alpha: float
-    """Symmetry factor"""
+    k0: float
+    """Rate constant (mol/(m^2 s))"""
+    H: float
+    """Particle thickness (m)"""
+    Cmax: float
+    """Maximum concentration (mol/m^3)"""
     Crate: float
-    """Current"""
+    """C-rate (1/hr)"""
     derivs: str = "fd"
     """Type of derivative computation"""
 
@@ -304,9 +308,13 @@ class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
         raise NotImplementedError("rhs method not implemented")
 
     def __post_init__(self):
+        self.Nx, self.Ny = self.domain.geometry.smooth.shape
         self.psi = self.domain.geometry.smooth
         self.sqrt_kappa = jnp.sqrt(self.kappa)
+        self.Lx, self.Ly = self.domain.L
+        self.L_ref = max(self.Lx, self.Ly)
         self.hx, self.hy = self.domain.dx
+        self.hx, self.hy = self.hx / self.L_ref, self.hy / self.L_ref 
         self.norm_grad_psi = (
             jnp.sqrt(
                 _gradx_c(self.psi, self.hx) ** 2 + _grady_c(self.psi, self.hy) ** 2
@@ -315,6 +323,10 @@ class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
         )
         self.left_half = jnp.zeros_like(self.psi)
         self.left_half = self.left_half.at[:, :100].set(1.0)
+        self.tau_rxn = (self.Cmax*self.H/self.k0)
+        self.afrac = jnp.sum(self.domain.geometry.binary)/(self.Nx*self.Ny)
+        self.Itilde = self.afrac * (self.tau_rxn)/(3600/self.Crate)
+        self.tf_tilde_est = 1/(self.Crate*self.tau_rxn/3600)
         if self.derivs == "fd":
             self.rhs = jax.jit(self.rhs_fd)
         else:
@@ -343,14 +355,14 @@ class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
         int_minus = (
             jnp.sum(self.j0(state) * jnp.exp(-0.5 * mu) * self.psi) * self.hx * self.hy
         )
-        y = (-self.Crate + jnp.sqrt(self.Crate**2 + 4.0 * int_plus * int_minus)) / (
+        y = (-self.Itilde + jnp.sqrt(self.Itilde**2 + 4.0 * int_plus * int_minus)) / (
             2.0 * int_plus
         )
         # Compute v to satisfy constant current constraint
         v = 2.0 * jnp.log(y)
         eta = mu + v
         return self.j0(state) * (
-            jnp.exp(-self.alpha * eta) - jnp.exp((1.0 - self.alpha) * eta)
+            jnp.exp(-0.5 * eta) - jnp.exp(0.5 * eta)
         )
 
     def get_voltage(self, state):
@@ -376,8 +388,137 @@ class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
         int_minus = (
             jnp.sum(self.j0(state) * jnp.exp(-0.5 * mu) * self.psi) * self.hx * self.hy
         )
-        y = (-self.Crate + jnp.sqrt(self.Crate**2 + 4.0 * int_plus * int_minus)) / (
+        y = (-self.Itilde + jnp.sqrt(self.Itilde**2 + 4.0 * int_plus * int_minus)) / (
             2.0 * int_plus
         )
         # Compute v to satisfy constant current constraint
         return 2.0 * jnp.log(y)
+    
+    def get_current(self,state):
+        # f = self.f(state)
+        mu = self.mu(state)
+        mask_avgx = _avgx_c2f(self.psi)
+        mask_avgy = _avgy_c2f(self.psi)
+        mu += (
+            -(self.kappa / self.psi)
+            * (
+                _divx_f2c(mask_avgx * _gradx_c2f(state, self.hx), self.hx)
+                + _divy_f2c(mask_avgy * _grady_c2f(state, self.hy), self.hy)
+            )
+            # - self.sqrt_kappa
+            # * self.norm_grad_psi
+            # * jnp.sqrt(2.0 * f)
+            # * jnp.cos(self.theta(t))
+            # * self.left_half
+        )
+        v = self.get_voltage(state)
+        eta = mu + v
+        rxn = self.j0(state) * (jnp.exp(-0.5 * eta) - jnp.exp(0.5 * eta))
+        return jnp.sum(rxn*self.psi)*self.hx*self.hy
+
+    def get_SOC(self,state):
+        return jnp.sum(state * self.domain.geometry.binary)/jnp.sum(self.domain.geometry.binary)
+
+    def get_cvar(self,state):
+        return jnp.sum((state - self.get_SOC(state))**2 * self.domain.geometry.binary)/jnp.sum(self.domain.geometry.binary)
+
+# @dataclasses.dataclass
+# class AllenCahn2DSmoothedBoundaryButlerVolmerConstantCurrent(BaseEquation):
+#     domain: Domain
+#     """Domain of the equation"""
+#     kappa: float
+#     """Gradient energy coefficient"""
+#     f: Union[Callable, eqx.Module]  # Can be a callable or Equinox module
+#     """Function for the free energy density"""
+#     mu: Union[Callable, eqx.Module]  # Can be a callable or Equinox module
+#     """Function for the chemical potential"""
+#     j0: Union[Callable, eqx.Module]  # Can be a callable or Equinox module
+#     """Function for the exchange current"""
+#     alpha: float
+#     """Symmetry factor"""
+#     Crate: float
+#     """Current"""
+#     derivs: str = "fd"
+#     """Type of derivative computation"""
+
+#     def rhs(self, state, t):
+#         raise NotImplementedError("rhs method not implemented")
+
+#     def __post_init__(self):
+#         self.psi = self.domain.geometry.smooth
+#         self.sqrt_kappa = jnp.sqrt(self.kappa)
+#         self.hx, self.hy = self.domain.dx
+#         self.norm_grad_psi = (
+#             jnp.sqrt(
+#                 _gradx_c(self.psi, self.hx) ** 2 + _grady_c(self.psi, self.hy) ** 2
+#             )
+#             / self.psi
+#         )
+#         self.left_half = jnp.zeros_like(self.psi)
+#         self.left_half = self.left_half.at[:, :100].set(1.0)
+#         if self.derivs == "fd":
+#             self.rhs = jax.jit(self.rhs_fd)
+#         else:
+#             raise ValueError(f"Invalid derivative type: {self.derivs}")
+
+#     def rhs_fd(self, state, t):
+#         # f = self.f(state)
+#         mu = self.mu(state)
+#         mask_avgx = _avgx_c2f(self.psi)
+#         mask_avgy = _avgy_c2f(self.psi)
+#         mu += (
+#             -(self.kappa / self.psi)
+#             * (
+#                 _divx_f2c(mask_avgx * _gradx_c2f(state, self.hx), self.hx)
+#                 + _divy_f2c(mask_avgy * _grady_c2f(state, self.hy), self.hy)
+#             )
+#             # - self.sqrt_kappa
+#             # * self.norm_grad_psi
+#             # * jnp.sqrt(2.0 * f)
+#             # * jnp.cos(self.theta(t))
+#             # * self.left_half
+#         )
+#         int_plus = (
+#             jnp.sum(self.j0(state) * jnp.exp(0.5 * mu) * self.psi) * self.hx * self.hy
+#         )
+#         int_minus = (
+#             jnp.sum(self.j0(state) * jnp.exp(-0.5 * mu) * self.psi) * self.hx * self.hy
+#         )
+#         y = (-self.Crate + jnp.sqrt(self.Crate**2 + 4.0 * int_plus * int_minus)) / (
+#             2.0 * int_plus
+#         )
+#         # Compute v to satisfy constant current constraint
+#         v = 2.0 * jnp.log(y)
+#         eta = mu + v
+#         return self.j0(state) * (
+#             jnp.exp(-self.alpha * eta) - jnp.exp((1.0 - self.alpha) * eta)
+#         )
+
+#     def get_voltage(self, state):
+#         # f = self.f(state)
+#         mu = self.mu(state)
+#         mask_avgx = _avgx_c2f(self.psi)
+#         mask_avgy = _avgy_c2f(self.psi)
+#         mu += (
+#             -(self.kappa / self.psi)
+#             * (
+#                 _divx_f2c(mask_avgx * _gradx_c2f(state, self.hx), self.hx)
+#                 + _divy_f2c(mask_avgy * _grady_c2f(state, self.hy), self.hy)
+#             )
+#             # - self.sqrt_kappa
+#             # * self.norm_grad_psi
+#             # * jnp.sqrt(2.0 * f)
+#             # * jnp.cos(self.theta(t))
+#             # * self.left_half
+#         )
+#         int_plus = (
+#             jnp.sum(self.j0(state) * jnp.exp(0.5 * mu) * self.psi) * self.hx * self.hy
+#         )
+#         int_minus = (
+#             jnp.sum(self.j0(state) * jnp.exp(-0.5 * mu) * self.psi) * self.hx * self.hy
+#         )
+#         y = (-self.Crate + jnp.sqrt(self.Crate**2 + 4.0 * int_plus * int_minus)) / (
+#             2.0 * int_plus
+#         )
+#         # Compute v to satisfy constant current constraint
+#         return 2.0 * jnp.log(y)
