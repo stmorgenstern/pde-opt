@@ -4,7 +4,8 @@ This module contains the initialization functions for the PDEs.
 
 import jax.numpy as jnp
 import numpy as np
-
+from jax import random
+from pde_opt.numerics import Domain, Shape
 
 # borrowed from
 # https://github.com/biswaroopmukherjee/condensate/tree/master
@@ -67,3 +68,33 @@ def add_vortex_to_wavefunction(psi, vortex_pos, vortex_strength=1, vortex_width=
     psi_with_vortex = psi * (1 - core_factor) + psi * vortex_phase * core_factor
 
     return psi_with_vortex
+
+def gen_c0(shape, key, noise_fac: float = 0.05, nucsite: jnp.ndarray | None = None) -> jnp.ndarray:
+    """
+    Generate initial condition array given a Shape.
+
+    Args:
+        shape: Shape instance (must have .binary).
+        key: JAX PRNGKey
+        noise_fac: scale of uniform random perturbation in [-1, 1]
+        nucsite: array of nucleation values (same shape as shape.binary),
+                 applied only inside the mask. Default: zeros.
+
+    Returns:
+        c0: initial concentration array, same shape as shape.binary
+    """
+    psi_b = shape.binary.astype(jnp.float32)
+    H, W = psi_b.shape
+
+    # Uniform noise ∈ [-1, 1], masked by psi_b
+    noise = noise_fac * random.uniform(key, (H, W), minval=-1.0, maxval=1.0)
+
+    base = 0.01 * jnp.ones((H, W), dtype=jnp.float32)
+
+    if nucsite is None:
+        nucsite = jnp.zeros((H, W), dtype=jnp.float32)
+    else:
+        nucsite = nucsite.astype(jnp.float32)
+
+    c0 = base + (noise * psi_b) + (psi_b * nucsite)
+    return c0

@@ -1,2 +1,2 @@
 Slope: 0.000003
-Intercept: 0.089676
+Intercept: 0.014420

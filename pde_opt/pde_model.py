@@ -116,7 +116,7 @@ class PDEModel:
         # Initialize the solver with solver_parameters and equation attributes
         solver = self.solver_type(**full_solver_params)
 
-        # Solve with diffrax
+        # # Solve with diffrax
         solution = dfx.diffeqsolve(
             dfx.ODETerm(
                 jax.jit(lambda t, y, args: equation.rhs(y, t))
@@ -132,6 +132,20 @@ class PDEModel:
             adjoint=adjoint,
             stepsize_controller=stepsize_controller,
         )
+        # Solve with diffrax
+        # solution = dfx.diffeqsolve(
+        #     dfx.ODETerm(lambda t, y, args: equation.rhs(y, t)),
+        #     solver,
+        #     t0=ts[0],
+        #     t1=ts[-1],
+        #     dt0=dt0,
+        #     y0=y0,
+        #     saveat=dfx.SaveAt(ts=ts),
+        #     max_steps=max_steps,
+        #     throw=False,
+        #     adjoint=adjoint,
+        #     stepsize_controller=stepsize_controller,
+        # )
 
         return solution.ys
 
@@ -482,7 +496,7 @@ class PDEModel:
                 array (shape: (len(ts), *y0.shape)) and returns a scalar value to minimize.
                 The function should be JAX-compatible for automatic differentiation.
             y0: Initial condition array. Shape should match the spatial dimensions of
-                the domain.
+                the domain.z_li
             ts: Time points at which to save the solution. Should be a 1D array of
                 increasing time values.
             opt_parameters (Dict[str, jax.Array]): Parameters to optimize.
@@ -530,11 +544,11 @@ class PDEModel:
 
         # Set up BFGS solver
         solver = optx.BFGS(
-            rtol=1e-8,
+            rtol=1e-4,
             atol=1e-8,
             verbose=frozenset({"step", "accepted", "loss", "step_size"}),
         )
-
+        print("oh boy we're optimizing now")
         # Optimize
         sol = optx.minimise(
             objective_wrapper,
